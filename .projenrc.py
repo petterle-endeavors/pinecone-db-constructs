@@ -14,19 +14,15 @@ PROJECT = PythonProject(
     description="description",
     poetry=True,
     deps=[
-        "mangum@^0.17",
-        "fastapi@^0.104",
-        "python@^3.9",
+        "python@^3.8",
         "aws-lambda-powertools@^2.26",
         "pydantic@^2.4",
         "pydantic-settings@^2.0",
-        "urllib3@<2",  # this is required to work on lambda
     ],
     dev_deps=[
         "projen@<=0.72.0",
-        "aws-cdk-lib@^2.106",
-        "aws-cdk.aws-lambda-python-alpha@^2.106.1a0",
-        "uvicorn@{version = '^0.24.0', extras = ['standard']}",
+        "aws-cdk-lib@^2.69",
+        "aws-cdk.aws-lambda-python-alpha@^2.69.0a0",
     ],
 )
 PROJECT.add_git_ignore("**/cdk.out")
@@ -46,9 +42,7 @@ docker-start:
 \tsudo systemctl start docker
 
 cdk-deploy-all:
-
 \tcdk deploy --all --require-approval never --app "python app.py"
-
 """
 
 MAKEFILE = TextFile(
