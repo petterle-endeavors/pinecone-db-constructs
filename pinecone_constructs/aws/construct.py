@@ -10,11 +10,7 @@ from aws_cdk import custom_resources as cr
 from constructs import Construct
 from pydantic_settings import BaseSettings
 
-from iac.constructs.construct_helpers import (
-    get_hash_for_all_files_in_dir,
-    get_secret_arn_from_name,
-)
-from  import (
+from .custom_resource.function.settings import (
     PineconeDBSettings,
 )
 
