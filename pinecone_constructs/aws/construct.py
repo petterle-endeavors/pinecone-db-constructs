@@ -1,11 +1,19 @@
 """Define the Pinecone database construct."""
+import json
+from hashlib import md5
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional, Union
+from typing import Optional, Union
 
-from aws_cdk import CustomResource, Duration, RemovalPolicy
-from aws_cdk import Size as StorageSize
-from aws_cdk import aws_iam as iam
+from aws_cdk import CustomResource, Duration
+from aws_cdk.aws_secretsmanager import Secret
+from aws_cdk.aws_iam import PolicyStatement
+from aws_cdk import aws_lambda_python_alpha as lambda_alpha
+from aws_cdk import aws_lambda as _lambda
+from aws_cdk import (
+    Size,
+    CfnOutput,
+)
 from aws_cdk import custom_resources as cr
 from constructs import Construct
 from pydantic_settings import BaseSettings
@@ -16,89 +24,102 @@ from .custom_resource.function.settings import (
 
 
 
-CONSTRUCTS_DIR = Path(__file__).parent
-PINECONE_CUSTOM_RESOURCE_DIR = CONSTRUCTS_DIR / "custom_resources" / "pinecone_db"
-CUSTOM_RESOURCE_DIRECTORY = CONSTRUCTS_DIR / "custom_resources"
-
-
-# pylint: disable=too-many-instance-attributes
-@dataclass
-class LambdaConfig:
-    """Lambda function configuration."""
-
-    construct_id: str
-    description: str
-    index_directory: Union[str, Path]
-    index_module_name: str = "function/index.py"
-    handler: str = "lambda_handler"
-    environment: Optional[BaseSettings] = None
-    memory_size_mb: int = 256
-    timeout: int = 5
-    ephemeral_storage_size_mb: int = 512
+_CUSTOM_RESOURCE_DIRECTORY = Path(__file__).parent / "custom_resource"
 
 
 class PineconeDatabase(Construct):
     """Define the Pinecone database construct."""
+
+    # pylint: disable=too-many-instance-attributes
+    @dataclass
+    class LambdaConfig:
+        """Lambda function configuration."""
+
+        construct_id: str
+        description: str
+        index_directory: Union[str, Path]
+        index_module_name: str = "function/index.py"
+        handler: str = "lambda_handler"
+        environment: Optional[BaseSettings] = None
+        memory_size_mb: int = 256
+        timeout: int = 120
+        ephemeral_storage_size_mb: int = 512
 
     def __init__(  # pylint: disable=too-many-arguments
         self,
         scope: Construct,
         construct_id: str,
         db_settings: PineconeDBSettings,
-        resource_namer: Callable,
-        removal_policy: RemovalPolicy = RemovalPolicy.RETAIN,
         **kwargs,
     ) -> None:
         """Initialize the Pinecone database construct."""
         super().__init__(scope, construct_id, **kwargs)
-        self._namer = resource_namer
-        # We want to pass the removal policy to the custom resource
-        db_settings.pinecone_removal_policy = removal_policy.value  # type: ignore
-        self._secret_arn = get_secret_arn_from_name(db_settings.api_key_secret_name)
         self._db_settings = db_settings
-        self.custom_resource_provider = self._create_custom_resource()
-
-    def _create_custom_resource(self) -> cr.Provider:
-        config = self._get_lambda_config()
-        name = config.function_name
-        python_lambda = PythonLambda.get_lambda_function(
-            self,
-            construct_id=f"custom-resource-lambda-{name}",
-            config=config,
-        )
-        python_lambda.add_to_role_policy(
-            statement=iam.PolicyStatement(
-                actions=["secretsmanager:GetSecretValue"],
-                effect=iam.Effect.ALLOW,
-                resources=[self._secret_arn],
+        self.custom_resource_provider = self._create_custom_resource(
+            self.LambdaConfig(
+                construct_id=f"{construct_id}Lambda",
+                description=f"Custom resource provider for the {construct_id} Pinecone Index.",
+                index_directory=_CUSTOM_RESOURCE_DIRECTORY,
             )
         )
+
+    def _create_custom_resource(self, func_config: LambdaConfig) -> cr.Provider:
+        function = self._get_lambda(func_config)
+        api_key_secret = Secret.from_secret_name_v2(self, "PineconeApiKey", self._db_settings.api_key_secret_name)
+        api_key_secret.grant_read(function)
         provider: cr.Provider = cr.Provider(
             self,
-            id="custom-resource-provider",
-            on_event_handler=python_lambda.lambda_function,  # type: ignore
-            provider_function_name=name + "-PROVIDER",
+            id=f"{func_config.construct_id}Provider",
+            on_event_handler=function,  # type: ignore
         )
         CustomResource(
             self,
-            id="custom-resource",
+            id=f"{func_config.construct_id}CustomResource",
             service_token=provider.service_token,
+            # we are adding these properties so that cloudformation will
+            # update the custom resource when either the settings have changed
+            # or the custom resource directory has changed, i.e. the lambda
+            # function code has changed
             properties={
-                "custom_resource_dir_hash": get_hash_for_all_files_in_dir(CUSTOM_RESOURCE_DIRECTORY),
+                "custom_resource_dir_hash": self.get_hash_for_all_files_in_dir(_CUSTOM_RESOURCE_DIRECTORY),
                 "settings": self._db_settings.model_dump_json(),
             },
         )
         return provider
 
+    @staticmethod
+    def add_polling_permissions_to_lambda(
+        lambda_function: Union[lambda_alpha.PythonFunction, _lambda.Function],
+    ) -> None:
+        """
+        Add permissions to the lambda function to allow it to poll for the custom resource.
+
+        Args:
+            lambda_function: The lambda function to add the permissions to.
+
+        """
+        lambda_function.add_to_role_policy(
+            statement=PolicyStatement(
+                actions=[
+                    "lambda:AddPermission",
+                    "lambda:RemovePermission",
+                    "events:PutRule",
+                    "events:DeleteRule",
+                    "events:PutTargets",
+                    "events:RemoveTargets",
+                ],
+                resources=["*"],
+            )
+        )
+
     def _get_lambda(self, config: LambdaConfig) -> lambda_alpha.PythonFunction:
         index_directory = Path(config.index_directory)
-        python_runtime = _lambda.Runtime.PYTHON_3_11
         lambda_function = lambda_alpha.PythonFunction(
             self,
             config.construct_id,
             description=config.description,
             entry=str(index_directory.resolve().as_posix()),
-            runtime=python_runtime,
+            runtime=_lambda.Runtime.PYTHON_3_11,
             bundling=lambda_alpha.BundlingOptions(
                 # this is needed because we are running ARM
                 # if we were running x86, we would NOT need any bundling
@@ -114,18 +135,47 @@ class PineconeDatabase(Construct):
             timeout=Duration.seconds(config.timeout),
             memory_size=config.memory_size_mb,
             ephemeral_storage_size=Size.mebibytes(config.ephemeral_storage_size_mb),
-            environment=self._serialize_env(config.environment) if config.environment else None,
+            environment=self.serialize_env(config.environment) if config.environment else None,
         )
-        if config.function_url_config:
-            function_url = lambda_function.add_function_url(
-                cors=_lambda.FunctionUrlCorsOptions(allowed_origins=["*"], allowed_headers=["*"]),
-                auth_type=config.function_url_config.auth_type,
-                invoke_mode=_lambda.InvokeMode.BUFFERED,
-            )
-            CfnOutput(
-                self,
-                f"{config.construct_id}Url",
-                value=function_url.url,
-                description=f"URL for the {config.construct_id} Lambda function.",
-            )
+        CfnOutput(
+            self,
+            f"{config.construct_id}FunctionArn",
+            value=lambda_function.function_arn,
+            description=f"ARN for the {config.construct_id} Lambda function.",
+        )
         return lambda_function
+
+    @staticmethod
+    def serialize_env(env: BaseSettings) -> dict[str, str]:
+        """
+        Serialize the environment variables.
+        
+        This will serialize the pydantic settings into a dictionary that can be passed
+        to any aws resource for the environment variables.
+
+        Args:
+            env: The pydantic settings object.
+        
+        Returns:
+            The serialized environment variables.
+
+        """
+        return {key: json.dumps(value) for key, value in env.model_dump(mode="json").items()}
+
+    @staticmethod
+    def get_hash_for_all_files_in_dir(directory: Path) -> str:
+        """
+        Get the hash for all files in a directory.
+
+        Args:
+            directory: The directory to get the hash for.
+
+        Returns:
+            The hash for all files in the directory.
+
+        """
+        raw_text = ""
+        for file in directory.glob("**/*"):
+            if file.is_file():
+                raw_text += file.read_text()
+        return md5(raw_text.encode()).hexdigest()

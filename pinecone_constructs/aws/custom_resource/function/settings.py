@@ -1,7 +1,7 @@
 """Pinecone index config settings."""
 from enum import Enum
 from typing import List, Optional, TypedDict
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -60,10 +60,9 @@ NUM_CHARS_TO_USE_FROM_STACK_NAME = 10
 class PineconeIndexConfig(BaseSettings):
     """Define the settings for the Pinecone index."""
 
-    name: str = Field(
-        ...,
-        max_length=MAX_INDEX_NAME_LENGTH,
-        description="Name of the index.",
+    name: Optional[str] = Field(
+        default=None,
+        description="We recommend leaving this blank to avoid name collisions.",
     )
     dimension: int = Field(
         ...,
@@ -126,21 +125,11 @@ class PineconeDBSettings(BaseSettings):
         ...,
         description="The environment to use for the Pinecone project.",
     )
-    indexes: List[PineconeIndexConfig] = Field(
+    index_config: PineconeIndexConfig = Field(
         ...,
-        max_length=2,
-        description="Config for the Pinecone indexes.",
+        description="Config for the Pinecone index.",
     )
-    pinecone_removal_policy: RemovalPolicy = Field(
+    removal_policy: RemovalPolicy = Field(
         default=RemovalPolicy.RETAIN,
         description="The removal policy for the Pinecone indexes.",
     )
-
-    @field_validator("indexes")
-    @classmethod
-    def ensure_no_duplicate_indexes(cls, indexes: List[PineconeIndexConfig]) -> List[PineconeIndexConfig]:
-        """Ensure that there are no duplicate indexes."""
-        index_names = [index.name for index in indexes]
-        if len(index_names) != len(set(index_names)):
-            raise ValueError("Index names must be unique.")
-        return indexes

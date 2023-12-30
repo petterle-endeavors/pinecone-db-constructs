@@ -15,14 +15,15 @@ PROJECT = PythonProject(
     poetry=True,
     deps=[
         "python@^3.8",
-        "aws-lambda-powertools@^2.26",
         "pydantic@^2.4",
         "pydantic-settings@^2.0",
     ],
     dev_deps=[
         "projen@<=0.72.0",
         "aws-cdk-lib@^2.69",
+        "crhelper@^2.0",
         "aws-cdk.aws-lambda-python-alpha@^2.69.0a0",
+        "pinecone-client@^2.0",
     ],
 )
 PROJECT.add_git_ignore("**/cdk.out")
