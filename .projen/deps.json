@@ -11,6 +11,11 @@
       "type": "devenv"
     },
     {
+      "name": "aws-lambda-powertools",
+      "version": "^2.0",
+      "type": "devenv"
+    },
+    {
       "name": "crhelper",
       "version": "^2.0",
       "type": "devenv"

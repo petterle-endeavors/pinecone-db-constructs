@@ -3,7 +3,7 @@ import json
 from hashlib import md5
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Union, List
 
 from aws_cdk import CustomResource, Duration
 from aws_cdk.aws_secretsmanager import Secret
@@ -17,17 +17,20 @@ from aws_cdk import (
 from aws_cdk import custom_resources as cr
 from constructs import Construct
 from pydantic_settings import BaseSettings
+from pydantic import BaseModel
 
-from .custom_resource.function.settings import (
-    PineconeDBSettings,
+from .custom_resource.function.pinecone_settings import (
+    PineconeIndexSettings,
+    MAX_INDEX_NAME_LENGTH,
 )
+from .custom_resource.function.settings import Settings as RuntimeSettings
 
 
 
 _CUSTOM_RESOURCE_DIRECTORY = Path(__file__).parent / "custom_resource"
 
 
-class PineconeDatabase(Construct):
+class PineconeIndex(Construct):
     """Define the Pinecone database construct."""
 
     # pylint: disable=too-many-instance-attributes
@@ -49,43 +52,61 @@ class PineconeDatabase(Construct):
         self,
         scope: Construct,
         construct_id: str,
-        db_settings: PineconeDBSettings,
+        index_settings: Union[List[PineconeIndexSettings], PineconeIndexSettings],
         **kwargs,
     ) -> None:
         """Initialize the Pinecone database construct."""
         super().__init__(scope, construct_id, **kwargs)
-        self._db_settings = db_settings
+        if not isinstance(index_settings, list):
+            index_settings = [index_settings]
+        self._index_settings = index_settings
         self.custom_resource_provider = self._create_custom_resource(
             self.LambdaConfig(
                 construct_id=f"{construct_id}Lambda",
-                description=f"Custom resource provider for the {construct_id} Pinecone Index.",
+                description="Custom resource provider for configuring Pinecone indexes.",
                 index_directory=_CUSTOM_RESOURCE_DIRECTORY,
+                environment=RuntimeSettings()
             )
         )
 
     def _create_custom_resource(self, func_config: LambdaConfig) -> cr.Provider:
         function = self._get_lambda(func_config)
-        api_key_secret = Secret.from_secret_name_v2(self, "PineconeApiKey", self._db_settings.api_key_secret_name)
-        api_key_secret.grant_read(function)
         provider: cr.Provider = cr.Provider(
             self,
             id=f"{func_config.construct_id}Provider",
             on_event_handler=function,  # type: ignore
         )
-        CustomResource(
-            self,
-            id=f"{func_config.construct_id}CustomResource",
-            service_token=provider.service_token,
+        for index_settings in self._index_settings:
+            index_settings.name = self.get_index_name(provider, index_settings)
+            properties = self.serialize_env(index_settings)
             # we are adding these properties so that cloudformation will
             # update the custom resource when either the settings have changed
             # or the custom resource directory has changed, i.e. the lambda
             # function code has changed
-            properties={
-                "custom_resource_dir_hash": self.get_hash_for_all_files_in_dir(_CUSTOM_RESOURCE_DIRECTORY),
-                "settings": self._db_settings.model_dump_json(),
-            },
-        )
+            properties["custom_resource_dir_hash"] = self.get_hash_for_all_files_in_dir(_CUSTOM_RESOURCE_DIRECTORY)
+            api_key_secret = Secret.from_secret_name_v2(self, "PineconeApiKey", index_settings.api_key_secret_name)
+            api_key_secret.grant_read(function)
+            CustomResource(
+                self,
+                id=f"{func_config.construct_id}CustomResource",
+                service_token=provider.service_token,
+                properties=properties,
+            )
+            CfnOutput(
+                self,
+                f"{index_settings.name}IndexName",
+                value=index_settings.name,
+                description=f"Name of the '{index_settings.name}' Pinecone index.",
+            )
         return provider
+
+    @staticmethod
+    def get_index_name(provider: cr.Provider, index_settings: PineconeIndexSettings) -> str:
+        """Get the index name."""
+        prefix = md5(provider.service_token.encode()).hexdigest()[:20]
+        index_name = index_settings.name
+        name = f"{prefix}-{index_name}"
+        return name[:MAX_INDEX_NAME_LENGTH]
 
     @staticmethod
     def add_polling_permissions_to_lambda(
@@ -146,7 +167,7 @@ class PineconeDatabase(Construct):
         return lambda_function
 
     @staticmethod
-    def serialize_env(env: BaseSettings) -> dict[str, str]:
+    def serialize_env(env: BaseModel) -> dict[str, str]:
         """
         Serialize the environment variables.
         
@@ -160,7 +181,13 @@ class PineconeDatabase(Construct):
             The serialized environment variables.
 
         """
-        return {key: json.dumps(value) for key, value in env.model_dump(mode="json").items()}
+        obj = {
+            key: value
+            if isinstance(value, str)
+            else json.dumps(value)
+            for key, value in env.model_dump(mode="json", exclude_none=True).items()
+        }
+        return obj
 
     @staticmethod
     def get_hash_for_all_files_in_dir(directory: Path) -> str:
@@ -176,6 +203,6 @@ class PineconeDatabase(Construct):
         """
         raw_text = ""
         for file in directory.glob("**/*"):
-            if file.is_file():
+            if file.is_file() and file.suffix in {".py", ".json"}:
                 raw_text += file.read_text()
         return md5(raw_text.encode()).hexdigest()

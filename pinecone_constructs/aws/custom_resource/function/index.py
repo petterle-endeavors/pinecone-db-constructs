@@ -1,48 +1,61 @@
 """Define the lambda function for initializing the Pinecone database."""
+import copy
 import logging
-from typing import Union
-from crhelper import CfnResource
-from .settings import PineconeDBSettings
-from .helpers import get_index_name_from_event
+from typing import Any, Dict, Union
+from crhelper import CfnResource, FAILED
+
+from aws_lambda_powertools.utilities.typing import LambdaContext
+from .pinecone_settings import PineconeIndexSettings
+from .settings import Settings
+from .pinecone import PineconeIndex
 
 LOGGER = logging.getLogger(__name__)
 
 helper = CfnResource(
     json_logging=True,
-    log_level="DEBUG",
+    log_level="INFO",
     boto_level="CRITICAL",
     # polling_interval=1,
 )
 
-
+SETTINGS: Union[Settings, None] = None
 try:
-    SETTINGS = PineconeDBSettings()  # type: ignore
-except Exception as e:  # pylint: disable=broad-except
-    helper.init_failure(e)
-    raise e
+    SETTINGS = Settings()  # type: ignore
+except Exception as error:  # pylint: disable=broad-except
+    helper.init_failure(error)
 
 
 @helper.create
-def create(event, _context) -> Union[bool, str, None]:
+def create(_: Dict[str, Any], context: LambdaContext) -> Union[bool, str, None]:
     """Create the Pinecone database."""
-    index_name = SETTINGS.index_config.name or get_index_name_from_event(event)  # pylint: disable=no-member
-    LOGGER.info("Creating Pinecone index '%s'", index_name)
+    index: PineconeIndex = context.index # type: ignore
+    LOGGER.info("Creating Pinecone index '%s'", index.name)
+    index.create()
 
 
 @helper.update
-def update(event, _context) -> Union[bool, str, None]:
+def update(_: Dict[str, Any], context: LambdaContext) -> Union[bool, str, None]:
     """Update the Pinecone database."""
-    index_name = SETTINGS.index_config.name or get_index_name_from_event(event) # pylint: disable=no-member
-    LOGGER.info("Updating Pinecone index '%s'", index_name)
+    index: PineconeIndex = context.index # type: ignore
+    LOGGER.info("Updating Pinecone index '%s'", index.name)
 
 
 @helper.delete
-def delete(event, _context) -> Union[bool, str, None]:
+def delete(_: Dict[str, Any], context: LambdaContext) -> Union[bool, str, None]:
     """Delete the Pinecone database."""
-    index_name = SETTINGS.index_config.name or get_index_name_from_event(event) 
-    LOGGER.info("Deleting Pinecone index '%s'", index_name)
+    index: PineconeIndex = context.index # type: ignore
+    LOGGER.info("Deleting Pinecone index '%s'", index.name)
 
 
-def handler(event, context):
+def lambda_handler(event: dict, context: LambdaContext):
     """Handle the lambda event."""
+    assert SETTINGS is not None, "SETTINGS is None"
+    index_settings = PineconeIndexSettings.model_validate(event["ResourceProperties"])
+    settings = copy.deepcopy(SETTINGS)
+    context.index = PineconeIndex(  # type: ignore
+        settings=copy.deepcopy(SETTINGS),
+        index_settings=index_settings,
+    )
     helper(event, context)
+    if helper.Status == FAILED:
+        raise RuntimeError(f"Failed to create custom resource: {helper.Reason}")

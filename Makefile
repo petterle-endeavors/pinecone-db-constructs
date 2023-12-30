@@ -1,5 +1,8 @@
 install:
-	pip install "projen<=0.72.0"
+	npm install -g projen aws-cdk
+	curl -sSL https://install.python-poetry.org | python3 -
+	poetry install
+	poetry shell
 
 synth:
 	projen --post false
@@ -11,4 +14,4 @@ docker-start:
 	sudo systemctl start docker
 
 cdk-deploy-all:
-	cdk deploy --all --require-approval never --app "python app.py"
+	cdk deploy --all --require-approval never --app "python pinecone_constructs/examples/aws/app.py"
