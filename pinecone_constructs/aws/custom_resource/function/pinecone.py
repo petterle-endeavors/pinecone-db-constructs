@@ -39,6 +39,11 @@ class PineconeIndex:
         """Return the name of the index."""
         return self._index_settings.name
 
+    @staticmethod
+    def get_pod_type(index_settings: PineconeIndexSettings) -> str:
+        """Pod type is in the format s1.x1, so we need to split and get the first prefix (Example: s1)."""
+        return f"{index_settings.pod_instance_type}.{index_settings.pod_size}"
+
     def create(self) -> None:
         """Create a pinecone index."""
         settings = self._index_settings
@@ -49,9 +54,20 @@ class PineconeIndex:
             metric=settings.metric,
             pods=settings.pods,
             replicas=settings.replicas,
-            pod_type=f"{settings.pod_instance_type}.{settings.pod_size}",
+            pod_type=self.get_pod_type(settings),
             metadata_config=settings.metadata_config,
             source_collection=settings.source_collection,
+        )
+
+    def update(self) -> None:
+        """Update the pinecone index."""
+        settings = self._index_settings
+        self._validate_update_operation()
+        self.run_operation_with_retry(
+            pinecone.configure_index,
+            name=settings.name,
+            replicas=settings.replicas,
+            pod_type=self.get_pod_type(settings),
         )
 
     def delete(self) -> None:
@@ -61,6 +77,22 @@ class PineconeIndex:
                 pinecone.delete_index,
                 name=self._index_settings.name,
             )
+
+    def run_operation_with_retry(self, operation: Callable, *args, **kwargs) -> None:
+        """Run an operation with retries."""
+        num_attempts = self._settings.num_attempts_to_run_operation
+        delay_between_attempts = 5
+        for attempt in range(num_attempts):
+            try:
+                operation(*args, **kwargs)
+                return
+            except Exception as error:  # pylint: disable=broad-except
+                LOGGER.error(error)
+                LOGGER.info("Attempt %s of %s failed.", attempt + 1, num_attempts)
+                if attempt + 1 == num_attempts:
+                    raise RuntimeError(f"Failed to run operation: {operation.__name__}") from error
+                LOGGER.info("Retrying in %s seconds...", delay_between_attempts)
+                time.sleep(delay_between_attempts)
 
     def _can_delete_index(self) -> bool:
         """Validate that the index can be deleted."""
@@ -93,18 +125,15 @@ class PineconeIndex:
             source=index_name,
         )
 
-    def run_operation_with_retry(self, operation: Callable, *args, **kwargs) -> None:
-        """Run an operation with retries."""
-        num_attempts = self._settings.num_attempts_to_run_operation
-        delay_between_attempts = 5
-        for attempt in range(num_attempts):
-            try:
-                operation(*args, **kwargs)
-                return
-            except Exception as error:  # pylint: disable=broad-except
-                LOGGER.error(error)
-                LOGGER.info("Attempt %s of %s failed.", attempt + 1, num_attempts)
-                if attempt + 1 == num_attempts:
-                    raise RuntimeError(f"Failed to run operation: {operation.__name__}") from error
-                LOGGER.info("Retrying in %s seconds...", delay_between_attempts)
-                time.sleep(delay_between_attempts)
+    def _validate_update_operation(self) -> None:
+        index_settings = self._index_settings
+        pod_type = pinecone.describe_index(index_settings.name).pod_type
+        current_pod_instance_type, current_pod_size = pod_type.split(".")
+        new_pod_size = index_settings.pod_size
+        assert (
+            current_pod_size <= new_pod_size
+        ), f"Cannot downgrade pod size. Current pod size: '{current_pod_size}', new pod size: '{new_pod_size}'"
+        new_pod_instance_type = index_settings.pod_instance_type
+        assert (
+            current_pod_instance_type == new_pod_instance_type
+        ), f"Cannot change pod type. Current pod type: '{current_pod_instance_type}', new pod type: '{new_pod_instance_type}'"

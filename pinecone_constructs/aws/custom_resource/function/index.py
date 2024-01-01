@@ -35,10 +35,16 @@ def create(_: Dict[str, Any], context: LambdaContext) -> Union[bool, str, None]:
 
 
 @helper.update
-def update(_: Dict[str, Any], context: LambdaContext) -> Union[bool, str, None]:
+def update(event: Dict[str, Any], context: LambdaContext) -> Union[bool, str, None]:
     """Update the Pinecone database."""
+    assert SETTINGS is not None, "SETTINGS is None"
     index: PineconeIndex = context.index # type: ignore
+    resource_id = event.get("PhysicalResourceId")
+    assert (
+        index.name == resource_id
+    ), f"PhysicalResourceId '{resource_id}' does not match index name '{index.name}'"
     LOGGER.info("Updating Pinecone index '%s'", index.name)
+    index.update()
 
 
 @helper.delete
@@ -47,8 +53,9 @@ def delete(event: Dict[str, Any], context: LambdaContext) -> Union[bool, str, No
     assert SETTINGS is not None, "SETTINGS is None"
     index: PineconeIndex = context.index # type: ignore
     resource_id = event.get("PhysicalResourceId")
-    assert index.name == resource_id, \
-        f"PhysicalResourceId '{resource_id}' does not match index name '{index.name}'"
+    assert (
+        index.name == resource_id
+    ), f"PhysicalResourceId '{resource_id}' does not match index name '{index.name}'"
     LOGGER.info("Deleting Pinecone index '%s'", index.name)
     index.delete()
 

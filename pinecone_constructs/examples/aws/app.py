@@ -4,6 +4,7 @@ from pinecone_constructs.aws.construct import PineconeIndex
 from pinecone_constructs.aws.custom_resource.function.pinecone_settings import (
     PineconeIndexSettings,
     PineConeEnvironment,
+    RemovalPolicy,
 )
 
 
@@ -21,6 +22,7 @@ class PineconeStack(Stack):
                 environment=PineConeEnvironment.GCP_STARTER,
                 dimension=384,
                 name="pinecone-test",
+                removal_policy=RemovalPolicy.DESTROY,
             ),
         )
 
