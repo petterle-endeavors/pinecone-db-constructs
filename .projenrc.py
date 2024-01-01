@@ -8,25 +8,23 @@ AUTHORS = [
 PROJECT = PythonProject(
     author_email="jacobpetterle@tai-tutor.team",
     author_name=AUTHORS[0],
-    module_name="module_name",
-    name="package-name",
+    module_name="pinecone_constructs",
+    name="pinecone_constructs",
     version="0.0.0",
     description="description",
     poetry=True,
     deps=[
-        "mangum@^0.17",
-        "fastapi@^0.104",
-        "python@^3.9",
-        "aws-lambda-powertools@^2.26",
+        "python@^3.8",
         "pydantic@^2.4",
         "pydantic-settings@^2.0",
-        "urllib3@<2",  # this is required to work on lambda
     ],
     dev_deps=[
         "projen@<=0.72.0",
-        "aws-cdk-lib@^2.106",
-        "aws-cdk.aws-lambda-python-alpha@^2.106.1a0",
-        "uvicorn@{version = '^0.24.0', extras = ['standard']}",
+        "aws-cdk-lib@^2.69",
+        "crhelper@^2.0",
+        "aws-cdk.aws-lambda-python-alpha@^2.69.0a0",
+        "pinecone-client@^2.0",
+        "aws-lambda-powertools@^2.0",
     ],
 )
 PROJECT.add_git_ignore("**/cdk.out")
@@ -34,7 +32,10 @@ PROJECT.add_git_ignore("**/.venv*")
 
 MAKEFILE_CONTENTS = """\
 install:
-	pip install "projen<=0.72.0"
+    npm install -g projen aws-cdk
+    curl -sSL https://install.python-poetry.org | python3 -
+	poetry install
+    poetry shell
 
 synth:
 	projen --post false
@@ -46,9 +47,7 @@ docker-start:
 \tsudo systemctl start docker
 
 cdk-deploy-all:
-
-\tcdk deploy --all --require-approval never --app "python app.py"
-
+\tcdk deploy --all --require-approval never --app "python pinecone_constructs/examples/aws/app.py"
 """
 
 MAKEFILE = TextFile(
